@@ -31,7 +31,8 @@ def start_client():
 
     while True:
         message = input("Enter message: ")
-        client.send(rc4_encrypt(key, message.encode()))
+        client.send(rc4_encrypt(key, message.encode(('latin-1'))))
+
 
 if __name__ == '__main__':
     start_client()
