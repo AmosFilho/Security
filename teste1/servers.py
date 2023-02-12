@@ -2,6 +2,7 @@ from socket import socket, AF_INET, SOCK_STREAM
 from Crypto.Util.number import getPrime, bytes_to_long, long_to_bytes
 from Crypto.Cipher import ARC4
 import threading
+
 clients = []
 
 def generate_dh_keypair(p):
@@ -33,9 +34,9 @@ def handle_client(client, address, p, dh_private_key):
         encrypted_data = client.recv(1024)
         if not encrypted_data:
             break
+        print ("aaaaaaaaaaaaaaaa")
         decrypted_data = rc4_decrypt(key, encrypted_data)
         print(f"[{address[0]}:{address[1]}] {decrypted_data.decode('latin-1')}")
-
 
         for c in clients:
             if c == client:
@@ -43,6 +44,7 @@ def handle_client(client, address, p, dh_private_key):
             c.send(rc4_encrypt(key, decrypted_data))
 
     print(f"[-] Closed connection from {address[0]}:{address[1]}")
+    clients.remove(client)
     client.close()
 
 def start_server():
@@ -55,7 +57,6 @@ def start_server():
     p = getPrime(16)
     dh_public_key, dh_private_key = generate_dh_keypair(p)
 
-    
     while True:
         client, address = server.accept()
         clients.append(client)
