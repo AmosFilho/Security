@@ -1,70 +1,123 @@
 import socket
 import threading
-import random
+from Crypto.Cipher import ARC4
+from Crypto.Util.number import getPrime
+from Crypto.Random import get_random_bytes
 
-def generate_key():
-    key = random.randint(1, 50)
-    return key
+HOST = 'localhost'  # Endereço do servidor
+PORT = 5000  # Porta do servidor
+PRIME = getPrime(128)  # Número primo usado no Diffie-Hellman
+GENERATOR = 2  # Gerador usado no Diffie-Hellman
 
-def rc4(key, data):
-    S = list(range(256))
-    j = 0
-    out = []
-    # KSA (Key Scheduling Algorithm)
-    for i in range(256):
-        j = (j + S[i] + key[i % len(key)]) % 256
-        S[i], S[j] = S[j], S[i]
-    # PRGA (Pseudo Random Generation Algorithm)
-    i = j = 0
-    for char in data:
-        i = (i + 1) % 256
-        j = (j + S[i]) % 256
-        S[i], S[j] = S[j], S[i]
-        out.append(ord(char) ^ S[(S[i] + S[j]) % 256])
-    return bytes(out)
+class ChatRoom:
+    def _init_(self):
+        self.users = {}  # Dicionário que mapeia o nome do usuário para o objeto de conexão
+        self.lock = threading.Lock()  # Lock para evitar condições de corrida
 
-def client_handler(conn, addr, clients):
-    client_id = conn.recv(1024).decode()
-    clients[client_id] = conn
-    print(f"{client_id} acabou de se conectar")
-    
-    # Diffie-Hellman
-    p = 23
-    g = 5
-    a = random.randint(1, 10)
-    A = (g**a) % p
-    conn.sendall(str(A).encode())
-    B = int(conn.recv(1024).decode())
-    key = (B**a) % p
-    
-    while True:
+    def broadcast(self, sender, message):
+        """
+        Envia uma mensagem para todos os usuários, exceto o remetente.
+        """
+        encrypted_message = self.encrypt_message(sender, message)
+        for username, conn in self.users.items():
+            if username != sender:
+                conn.send(encrypted_message)
+
+    def handle(self, conn, addr):
+        """
+        Lida com uma conexão de usuário.
+        """
+        # Inicia o protocolo Diffie-Hellman
+        conn.send(f'{PRIME},{GENERATOR}'.encode())
+        client_public_key = int(conn.recv(1024).decode())
+        secret = pow(client_public_key, get_random_bytes(1)[0], PRIME)
+
+        # Recebe o nome do usuário
+        username = conn.recv(1024).decode()
+        print(f'{username} se conectou de {addr}')
+
+        # Adiciona o usuário à lista de usuários
+        with self.lock:
+            self.users[username] = conn
+
         try:
-            data = conn.recv(1024)
-            if not data:
-                break
-            for id, client in clients.items():
-                if id != client_id:
-                    encrypted_data = rc4(str(key).encode(), data)
-                    client.sendall(f"{client_id}: {encrypted_data.decode()}".encode())
-        except ConnectionResetError:
-            break
-    conn.close()
-    del clients[client_id]
-    print(f"{client_id} desconectado")
+            while True:
+                # Recebe uma mensagem do usuário
+                encrypted_message = conn.recv(1024)
+                if not encrypted_message:
+                    break
+                message = self.decrypt_message(username, encrypted_message)
+                print(f'{username}: {message}')
 
-def start_server():
-    host = '127.0.0.1'
-    port = 12345
+                # Envia a mensagem para todos os usuários
+                self.broadcast(username, message)
 
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((host, port))
-    server_socket.listen()
+                # Envia uma nova chave de criptografia
+                conn.send(get_random_bytes(1) + secret.to_bytes(16, 'big'))
+        except:
+            # Remove o usuário da lista de usuários se a conexão for encerrada
+            with self.lock:
+                del self.users[username]
+            print(f'{username} desconectou')
+            self.broadcast(username, f'{username} saiu do chat.')
 
-    clients = {}
-    while True:
-        conn, addr = server_socket.accept()
-        threading.Thread(target=client_handler, args=(conn, addr, clients)).start()
+    def encrypt_message(self, sender, message):
+        """
+        Criptografa uma mensagem usando RC4 com a chave secreta compartilhada entre o remetente e o receptor.
+        """
+        key = self.get_secret_key(sender)
+        cipher = ARC4.new(key)
+        return cipher.encrypt(message.encode())
+
+    def decrypt_message(self, receiver, encrypted_message):
+        """
+        Descriptografa uma mensagem usando RC4 com a chave secreta compartilhada entre o remetente e o receptor.
+        """
+        key = self.get_secret_key(receiver)
+        cipher = ARC4.new(key)
+        return cipher.decrypt(encrypted_message).decode()
+
+    def get_secret_key(self, username):
+      """
+      Retorna a chave secreta compartilhada entre o usuário especificado e o remetente da última mensagem.
+      """
+      with self.lock:
+          usernames = list(self.users.keys())
+      index = usernames.index(username)
+      sender = usernames[index - 1]  # Remetente da última mensagem
+      secret = self.get_secret(sender, username)
+      return secret.to_bytes(16, 'big')
+
+    def get_secret(self, user1, user2):
+        """
+        Calcula a chave secreta compartilhada entre dois usuários usando o protocolo Diffie-Hellman.
+        """
+        private_key = get_random_bytes(1)[0]
+        client_public_key = pow(GENERATOR, private_key, PRIME)
+        self.users[user1].send(str(client_public_key).encode())
+        server_public_key = int(self.users[user1].recv(1024).decode())
+        secret = pow(server_public_key, private_key, PRIME)
+
+        private_key = get_random_bytes(1)[0]
+        client_public_key = pow(GENERATOR, private_key, PRIME)
+        self.users[user2].send(str(client_public_key).encode())
+        server_public_key = int(self.users[user2].recv(1024).decode())
+        secret2 = pow(server_public_key, private_key, PRIME)
+
+        return secret
+    
+    def start(self):
+        """
+        Inicia o servidor e espera por conexões de usuários.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((HOST, PORT))
+            s.listen()
+            print(f'O servidor está ouvindo em {HOST}:{PORT}')
+            while True:
+                conn, addr = s.accept()
+                threading.Thread(target=self.handle, args=(conn, addr)).start()
 
 if __name__ == "__main__":
-    start_server()
+    chatroom = ChatRoom()
+    chatroom.start()
