@@ -1,93 +1,82 @@
 import socket
 import threading
 from cryptography.fernet import Fernet
-from Crypto.Random import random
-from Crypto.Util.Padding import pad
-import base64
-import hashlib
-import pickle
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from df import DiffieHellman
 
+class ChatServer:
+    def __init__(self, host='127.0.0.1', port=12345):
+        self.host = host
+        self.port = port
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.clients = []
 
-shared_key = None
-key_lock = threading.Lock()
+    def start(self):
+        self.server.bind((self.host, self.port))
+        self.server.listen()
 
+        while True:
+            client_socket, address = self.server.accept()
+            client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
+            client_thread.start()
 
-clients = []
-
-# Diffie-Hellman parameters
-prime = int("0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63", 16)
-
-generator = 2
-
-def handle_client(client, addr):
-    global shared_key, key_lock
-    ...
-
-    print(f"[CONNECTION] {addr} connected.")
-    clients.append(client)
-
-    # Diffie-Hellman key exchange
-    dh_private_key = random.getrandbits(256)
-    dh_public_key = pow(generator, dh_private_key, prime)
-    client.sendall(str(dh_public_key).encode())
-    client_public_key = int(client.recv(1024).decode())
-    with key_lock:
-        if shared_key is None:
-            shared_key = pow(client_public_key, dh_private_key, prime)
-    key_material = hashlib.sha256(str(shared_key).encode()).digest()
-    fernet_key = base64.urlsafe_b64encode(key_material)
-    fernet = Fernet(fernet_key)
-    print(f"Shared key: {shared_key}")
-
-    shared_key_bytes = hashlib.sha256(str(shared_key).encode()).digest()
-    fernet = Fernet(base64.urlsafe_b64encode(shared_key_bytes))
-
-
-    while True:
+    def handle_client(self, client_socket, address):
         try:
-            encrypted_msg = client.recv(1024)
-            if not encrypted_msg:
-                break
-            broadcast(encrypted_msg, client, fernet)
+            client = ChatClientHandler(client_socket, address)
+            client.connect()
+            self.broadcast(f"User {address[0]}:{address[1]} joined the chat.")
+            self.clients.append(client)
+
+            while True:
+                message = client.receive_message()
+                if not message:
+                    break
+                self.broadcast(f"User {address[0]}:{address[1]}: {message}")
+
+            client_socket.close()
+            self.clients.remove(client)
+            self.broadcast(f"User {address[0]}:{address[1]} left the chat.")
         except Exception as e:
-            print(f"[ERROR] {e}")
-            break
-            
+            print(f"Error: {e}")
 
-    clients.remove(client)
-    print(f"[DISCONNECTED] {addr} disconnected.")
-    client.close()
+    def broadcast(self, message):
+        for client in self.clients:
+            client.send_message(message)
 
-def broadcast(encrypted_msg, sender, fernet):
-    for client in clients:
-        if client != sender:
-            try:
-                ip = sender.getpeername()[0]
-                decrypted_msg = fernet.decrypt(encrypted_msg)
-                ip_msg = (ip, decrypted_msg.decode("utf-8"))
-                serialized_ip_msg = pickle.dumps(ip_msg)
-                encrypted_ip_msg = fernet.encrypt(serialized_ip_msg)
-                client.send(encrypted_ip_msg)
-                
+class ChatClientHandler:
+    def __init__(self, client_socket, address):
+        self.client_socket = client_socket
+        self.address = address
 
-            except:
-                print(f"[ERROR] Failed to send message to {client}")
+    def connect(self):
+        self.dh = DiffieHellman()
+        self.client_socket.send(f"Public key: {str(self.dh.public_key)}".encode('utf-8'))
+        message = self.client_socket.recv(1024).decode('utf-8')
+        if ':' not in message:
+            raise ValueError("Received message does not have expected format")
+        server_public_key = int(message.split(': ')[1])
+        self.shared_secret = self.dh.generate_shared_secret(server_public_key)
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=self.shared_secret,
+            iterations=100000,
+        )
+        self.key = kdf.derive(b"my secret key")
+        self.fernet = Fernet(self.key)
 
-def start_server(server):
-    server.listen()
-    print(f"[LISTENING] Server is listening on {IP}:{PORT}")
-    while True:
-        client, addr = server.accept()
-        thread = threading.Thread(target=handle_client, args=(client, addr))
-        thread.start()
-        
+    def send_message(self, message):
+        ciphertext = self.fernet.encrypt(message.encode('utf-8'))
+        self.client_socket.send(ciphertext)
 
-if __name__ == "__main__":
-    IP = "127.0.0.1"
-    PORT = 12345
-    ADDR = (IP, PORT)
-    
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(ADDR)
+    def receive_message(self):
+        ciphertext = self.client_socket.recv(4096)
+        if not ciphertext:
+            return None
+        message = self.fernet.decrypt(ciphertext).decode('utf-8')
+        return message
 
-    start_server(server)
+if __name__ == '__main__':
+    server = ChatServer()
+    server.start()

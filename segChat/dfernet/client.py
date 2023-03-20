@@ -1,62 +1,54 @@
 import socket
-import threading
 from cryptography.fernet import Fernet
-from Crypto.Random import random
-from Crypto.Util.Padding import pad
-import base64
-import hashlib
-import pickle
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from df import DiffieHellman
+class ChatClient:
+    def __init__(self, host='127.0.0.1', port=12345):
+        self.host = host
+        self.port = port
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-
-
-# Diffie-Hellman parameters
-prime = int("0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63", 16)
-
-generator = 2
-
-def receive_messages(client, fernet):
-    while True:
-        try:
-            encrypted_msg = client.recv(1024)
-            if not encrypted_msg:
+    def start(self):
+        self.connect()
+        while True:
+            message = input("> ")
+            if message.lower() == "exit":
                 break
+            self.send_message(message)
 
-            serialized_ip_msg = fernet.decrypt(encrypted_msg)
-            ip, msg = pickle.loads(serialized_ip_msg)
-            print(f"[{ip}] {msg}")
-        except Exception as e:
-            print(f"Error: {e}")
-            print(f"Encrypted message: {encrypted_msg}")
-            
+        self.client.close()
 
-def send_messages(client, fernet):
-    while True:
-        msg = input()
-        encrypted_msg = fernet.encrypt(msg.encode("utf-8"))
-        client.send(encrypted_msg)
+    def connect(self):
+        self.client.connect((self.host, self.port))
+        self.dh = DiffieHellman()
+        message = self.client.recv(1024).decode('utf-8')
+        if ':' not in message:
+            raise ValueError("Received message does not have expected format")
+        server_public_key = int(message.split(': ')[1])
+        self.client.send(f"Public key: {str(self.dh.public_key)}".encode('utf-8'))
+        self.shared_secret = self.dh.generate_shared_secret(server_public_key)
+        salt = self.shared_secret.to_bytes((self.shared_secret.bit_length() + 7) // 8, 'big')
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        self.key = kdf.derive(b"my secret key")
+        self.fernet = Fernet(self.key)
 
-if __name__ == "__main__":
-    IP = "127.0.0.1"
-    PORT = 12345
-    ADDR = (IP, PORT)
+    def send_message(self, message):
+        ciphertext = self.fernet.encrypt(message.encode('utf-8'))
+        self.client.send(ciphertext)
 
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect(ADDR)
+    def receive_message(self):
+        ciphertext = self.client.recv(4096)
+        if not ciphertext:
+            return None
+        message = self.fernet.decrypt(ciphertext).decode('utf-8')
+        return message
 
-    # Diffie-Hellman key exchange
-    dh_private_key = random.getrandbits(256)
-    server_public_key = int(client.recv(1024).decode())
-    client.sendall(str(pow(generator, dh_private_key, prime)).encode())
-    shared_key = pow(server_public_key, dh_private_key, prime)
-    key_material = hashlib.sha256(str(shared_key).encode()).digest()
-    fernet_key = base64.urlsafe_b64encode(key_material)
-    fernet = Fernet(fernet_key)
-
-
-    receive_thread = threading.Thread(target=receive_messages, args=(client, fernet))
-    receive_thread.start()
-
-    send_thread = threading.Thread(target=send_messages, args=(client, fernet))
-    send_thread.start()
-    print(f"Shared key: {shared_key}")
-
+if __name__ == '__main__':
+    client = ChatClient()
+    client.start()
