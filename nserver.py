@@ -1,6 +1,9 @@
 import tkinter as tk
 import socket
 import threading
+import random
+from sympy import isprime
+
 
 
 window = tk.Tk()
@@ -80,13 +83,15 @@ def accept_clients(the_server, y):
 # Function to receive message from current client AND
 # Send that message to other clients
 def send_receive_client_message(client_connection, client_ip_addr):
-    global server, client_name, clients, clients_addr
+    global server, client_name, clients, clients_addr, nm1, nm2
     client_msg = " "
+    nm1 = random.randint(100, 1000)
+    nm2 = random.randint(100, 1000)
 
     # send welcome message to client
     client_name  = client_connection.recv(4096).decode()
     welcome_msg = "Welcome " + client_name + ". Use 'exit' to quit"
-    client_connection.send(welcome_msg.encode())
+    #client_connection.send(welcome_msg.encode())
 
     clients_names.append(client_name)
 
@@ -103,10 +108,12 @@ def send_receive_client_message(client_connection, client_ip_addr):
         idx = get_client_index(clients, client_connection)
         sending_client_name = clients_names[idx]
 
+        number = 42
         for c in clients:
             if c != client_connection:
                 server_msg = str(sending_client_name + "->" + client_msg)
-                c.send(server_msg.encode())
+                message = server_msg + '_' + str(number) 
+                c.send(message.encode())
 
     # find the client index then remove from both lists(client name list and connection list)
     idx = get_client_index(clients, client_connection)

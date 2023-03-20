@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import messagebox
 import socket
 import threading
+from random import randint
+import random
+from sympy import isprime
 
 window = tk.Tk()
 window.title("Client")
@@ -71,10 +74,19 @@ def connect_to_server(name):
 
 def receive_message_from_server(sck, m):
     while True:
-        from_server = sck.recv(4096).decode()
+        chatmssg = sck.recv(4096).decode()
+        from_server, number = chatmssg.split('_')
+        b = random.randint(1, 1000)
+
+        print(from_server)
+        print("my private key: "+number)
+        print("private key of other client: "+str(b))
+
+        secretKey = int(pow(int(number),b,13))
+        print (secretKey)
 
         if not from_server: break
-
+  
         # display message from server on the chat window
 
         # enable the display area and insert the text and then disable.
@@ -117,6 +129,8 @@ def getChatMessage(msg):
 
 
 def send_mssage_to_server(msg):
+    pKey =  random.randint(1, 1000)
+    print("private key that im sending: "+str(pKey))
     client_msg = str(msg)
     client.send(client_msg.encode())
     if msg == "exit":
